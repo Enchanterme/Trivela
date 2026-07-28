@@ -5,8 +5,8 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "dev": "node --watch src/server.js",
-    "start": "node src/server.js",
+    "dev": "node api.js && node --watch src/server.js",
+    "start": "node api.js && node src/server.js",
     "test": "node --test src/**/*.test.js",
     "test:integration": "node --test src/integration/*.test.js",
     "test:contract": "node --test src/integration/openapi-contract.test.js",
