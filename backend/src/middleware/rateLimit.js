@@ -110,6 +110,12 @@ export function createRateLimiter({
   // request, returns `{ maxRequests, windowMs }` to use instead of the static
   // defaults above, or a falsy value to fall back to them. Sync or async.
   resolveLimits = null,
+  // Optional per-route limits (#465). Given the request, returns
+  // `{ id, maxRequests, windowMs? }` for a matching route rule, or a falsy
+  // value. A match gets its own counter bucket (so a hot write endpoint does
+  // not consume the client's read budget) and can only tighten the limit that
+  // would otherwise apply — never loosen it.
+  resolveRouteLimit = null,
   // Optional monthly quota hooks (#759), independent of the windowed
   // maxRequests/windowMs check above: the window check limits burst/sustained
   // rate, this limits total volume over a calendar month regardless of how
@@ -132,10 +138,14 @@ export function createRateLimiter({
   return async function rateLimit(req, res, next) {
     try {
       const now = timeProvider();
-      const key = keyGenerator(req);
+      const routeLimit = resolveRouteLimit ? resolveRouteLimit(req) : null;
+      const key = routeLimit ? `${keyGenerator(req)}|route:${routeLimit.id}` : keyGenerator(req);
       const override = resolveLimits ? await resolveLimits(req) : null;
-      const effectiveMaxRequests = override?.maxRequests ?? maxRequests;
-      const effectiveWindowMs = override?.windowMs ?? windowMs;
+      const tierMaxRequests = override?.maxRequests ?? maxRequests;
+      const effectiveMaxRequests = routeLimit
+        ? Math.min(tierMaxRequests, routeLimit.maxRequests)
+        : tierMaxRequests;
+      const effectiveWindowMs = routeLimit?.windowMs ?? override?.windowMs ?? windowMs;
 
       const { count, resetAt } = await rateLimitStore.increment(key, effectiveWindowMs, now);
 
