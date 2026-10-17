@@ -242,6 +242,80 @@ fn test_batch_credit() {
 }
 
 #[test]
+fn test_batch_credit_updates_total_supply() {
+    let (env, client, _admin) = setup_rewards();
+    let creditor = Address::generate(&env);
+    let user_a = Address::generate(&env);
+    let user_b = Address::generate(&env);
+    env.mock_all_auths();
+
+    client.credit(&creditor, &user_a, &100);
+    let recipients = vec![&env, (user_a.clone(), 50u64), (user_b.clone(), 75u64)];
+    client.batch_credit(&creditor, &recipients);
+
+    assert_eq!(client.balance(&user_a), 150);
+    assert_eq!(client.balance(&user_b), 75);
+    // TOTAL_SUPPLY must equal the sum of balances (#1021, formal model in contracts/rewards/formal).
+    assert_eq!(client.total_supply(), 225);
+}
+
+#[test]
+fn test_batch_credit_duplicate_recipient_is_credited_in_full() {
+    let (env, client, _admin) = setup_rewards();
+    let creditor = Address::generate(&env);
+    let user = Address::generate(&env);
+    env.mock_all_auths();
+
+    let recipients = vec![&env, (user.clone(), 30u64), (user.clone(), 20u64)];
+    client.batch_credit(&creditor, &recipients);
+
+    assert_eq!(client.balance(&user), 50);
+    assert_eq!(client.total_supply(), 50);
+}
+
+#[test]
+fn test_batch_credit_is_atomic_when_total_supply_would_overflow() {
+    let (env, client, _admin) = setup_rewards();
+    let creditor = Address::generate(&env);
+    let funded = Address::generate(&env);
+    let fresh = Address::generate(&env);
+    env.mock_all_auths();
+
+    client.credit(&creditor, &funded, &u64::MAX);
+
+    // `fresh`'s own balance would not overflow, but the supply would.
+    let recipients = vec![&env, (fresh.clone(), 1u64)];
+    let result = client.try_batch_credit(&creditor, &recipients);
+
+    assert!(result.is_err());
+    assert_eq!(client.balance(&fresh), 0);
+    assert_eq!(client.total_supply(), u64::MAX);
+}
+
+#[test]
+fn test_total_supply_equals_sum_of_balances_across_mixed_operations() {
+    let (env, client, admin) = setup_rewards();
+    let creditor = Address::generate(&env);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+    env.mock_all_auths();
+
+    client.credit(&creditor, &a, &1_000);
+    client.batch_credit(
+        &creditor,
+        &vec![&env, (b.clone(), 400u64), (c.clone(), 250u64), (a.clone(), 100u64)],
+    );
+    client.claim(&a, &300);
+    client.admin_transfer(&admin, &b, &c, &150);
+    client.claim(&c, &50);
+
+    let sum = client.balance(&a) + client.balance(&b) + client.balance(&c);
+    assert_eq!(client.total_supply(), sum);
+    assert_eq!(client.total_supply(), 1_000 + 400 + 250 + 100 - 300 - 50);
+}
+
+#[test]
 fn test_credit_overflow_errors() {
     let env = Env::default();
     let contract_id = env.register_contract(None, RewardsContract);

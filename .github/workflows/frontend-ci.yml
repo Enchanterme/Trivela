@@ -212,3 +212,40 @@ jobs:
           else
             echo "⚠️ No test report generated for ${{ matrix.browser }}" >> $GITHUB_STEP_SUMMARY
           fi
+
+  # #1319: hermetic browser flow — admin creates a campaign, the campaign page loads and a
+  # participant claims rewards. Builds its own bundle with an admin wallet and rewards contract
+  # configured; the REST API, Horizon, Soroban RPC and the wallet extension are mocked in the test.
+  campaign-to-claim-e2e:
+    name: Campaign creation to reward claim (Playwright)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run campaign-to-claim flow
+        run: npm run test:e2e:flow
+        working-directory: frontend
+
+      - name: Upload flow results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-flow-results
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+          if-no-files-found: ignore

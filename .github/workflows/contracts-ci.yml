@@ -69,6 +69,15 @@ jobs:
           node --test scripts/check-contract-events.test.mjs
           node scripts/check-contract-events.mjs
 
+      # #1317: SMT proofs (Z3) of the reward-accounting invariant
+      # TOTAL_SUPPLY == sum of balances for credit, batch_credit, claim and
+      # admin_transfer, plus negative controls. See docs/FORMAL_VERIFICATION.md.
+      - name: Verify reward accounting invariants (Z3)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq z3
+          ./scripts/verify-reward-invariants.sh
+
       - name: Run contract tests
         run: cargo test --workspace
 
