@@ -6,7 +6,7 @@ End-to-end tests for the Trivela frontend using Playwright.
 
 ### `cross-browser.spec.ts`
 
-**Purpose**: Verify cross-browser compatibility across Chromium, Firefox, and WebKit.
+**Purpose**: Verify cross-browser compatibility across desktop Chromium, Firefox, WebKit (Safari) and Edge, and mobile Chrome, Safari and Edge.
 
 **Coverage**:
 
@@ -21,7 +21,7 @@ End-to-end tests for the Trivela frontend using Playwright.
 - ✅ Console error detection
 - ✅ Browser-specific features (smooth scroll, form rendering, DevTools)
 
-**CI Integration**: Runs as a matrix job in `.github/workflows/frontend-ci.yml`, executing once per browser engine.
+**CI Integration**: Runs as a matrix job in `.github/workflows/frontend-ci.yml`, executing once per Playwright project: `chromium`, `firefox`, `webkit`, `edge`, `mobile-chrome`, `mobile-safari`, `mobile-edge`. The Edge projects use the `msedge` channel (`npx playwright install msedge`). The mobile projects run only `cross-browser.spec.ts` and `basic.spec.js`; run one locally with `npx playwright test --project=mobile-safari`.
 
 ### `campaign-lifecycle.test.ts`
 
