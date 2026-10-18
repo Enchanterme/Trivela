@@ -1106,6 +1106,7 @@ export async function createApp(options = {}) {
         entityId,
         diff,
         orgId: req.auth?.orgId || null,
+        ipAddress: req.ip || req.socket?.remoteAddress || null,
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
@@ -3357,6 +3358,8 @@ export async function createApp(options = {}) {
       prefix,
       rateLimiter,
       createIpfsPinRoutes({ getService: () => ipfsPinService, campaignRepository, guard }),
+    );
+
     // #1258 — fraud flag review (master key)
     app.use(
       `${prefix}/admin/fraud`,

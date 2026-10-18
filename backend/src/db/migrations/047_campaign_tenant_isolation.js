@@ -13,3 +13,10 @@ export const migration = {
     `);
   },
 };
+
+// The migration runner reads `version`/`description`/`up` as named exports.
+// Versions 46-48 are already taken by the other migrations that share those
+// file numbers, so these use the next free numbers.
+export const version = 50;
+export const description = migration.description;
+export const up = migration.up;

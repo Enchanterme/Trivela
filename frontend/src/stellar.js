@@ -76,6 +76,20 @@ export function getFreighterApi() {
   return freighterApi;
 }
 
+/* ---------- contract call results ---------- */
+
+/**
+ * `AssembledTransaction.simulate()` and `.signAndSend()` resolve to a transaction object whose
+ * decoded return value is on `.result` (see the generated bindings in ./contracts). Callers need the
+ * value, so unwrap it; plain values pass through unchanged.
+ */
+export function unwrapContractResult(value) {
+  if (value !== null && typeof value === 'object' && 'result' in value) {
+    return value.result;
+  }
+  return value;
+}
+
 /* ---------- formatting ---------- */
 
 export function formatPoints(points) {
@@ -167,7 +181,7 @@ export async function fetchRewardsBalance(walletAddress) {
   });
 
   const tx = await client.balance({ user: walletAddress });
-  return await tx.simulate();
+  return unwrapContractResult(await tx.simulate());
 }
 
 /* ---------- contract write helpers ---------- */
@@ -197,7 +211,7 @@ export async function submitClaimTransaction(walletAddress, amount) {
     amount: BigInt(amount),
   });
 
-  const newBalanceVal = await tx.signAndSend();
+  const newBalanceVal = unwrapContractResult(await tx.signAndSend());
   const hash = tx.signed.hash().toString('hex');
   const newBalance = formatPoints(newBalanceVal);
 
@@ -237,7 +251,7 @@ export async function submitRedeemTransaction(walletAddress, pointsAmount) {
     points_amount: BigInt(pointsAmount),
   });
 
-  const assetAmountVal = await tx.signAndSend();
+  const assetAmountVal = unwrapContractResult(await tx.signAndSend());
   const hash = tx.signed.hash().toString('hex');
   const assetAmount = formatPoints(assetAmountVal);
 
@@ -259,7 +273,7 @@ export async function fetchPayoutReserveBalance() {
   });
 
   const tx = await client.payout_reserve_balance();
-  const result = await tx.simulate();
+  const result = unwrapContractResult(await tx.simulate());
   return formatPoints(result);
 }
 
@@ -278,11 +292,26 @@ export async function fetchCampaignOnChainState(contractId) {
   });
 
   const [isActive, isWithinWindow, participantCount, maxCap, window] = await Promise.all([
-    client.is_active().then((tx) => tx.simulate()),
-    client.is_within_window().then((tx) => tx.simulate()),
-    client.get_participant_count().then((tx) => tx.simulate()),
-    client.get_max_cap().then((tx) => tx.simulate()),
-    client.get_window().then((tx) => tx.simulate()),
+    client
+      .is_active()
+      .then((tx) => tx.simulate())
+      .then(unwrapContractResult),
+    client
+      .is_within_window()
+      .then((tx) => tx.simulate())
+      .then(unwrapContractResult),
+    client
+      .get_participant_count()
+      .then((tx) => tx.simulate())
+      .then(unwrapContractResult),
+    client
+      .get_max_cap()
+      .then((tx) => tx.simulate())
+      .then(unwrapContractResult),
+    client
+      .get_window()
+      .then((tx) => tx.simulate())
+      .then(unwrapContractResult),
   ]);
 
   // get_window() returns (start, end) as ledger-timestamp (unix seconds).
@@ -316,7 +345,7 @@ export async function checkParticipantStatus(walletAddress) {
   });
 
   const tx = await client.is_participant({ participant: walletAddress });
-  return await tx.simulate();
+  return unwrapContractResult(await tx.simulate());
 }
 
 /**
@@ -356,7 +385,7 @@ export async function submitRegisterTransaction(walletAddress) {
     proof: emptyProof,
   });
 
-  const wasNew = await tx.signAndSend();
+  const wasNew = unwrapContractResult(await tx.signAndSend());
   const hash = tx.signed.hash().toString('hex');
 
   return { hash, alreadyRegistered: !wasNew };
@@ -411,7 +440,7 @@ export async function getCampaignAdminNonce(contractId) {
   });
 
   const tx = await client.admin_nonce();
-  return await tx.simulate();
+  return unwrapContractResult(await tx.simulate());
 }
 
 /**
@@ -573,7 +602,7 @@ export async function fetchAllowance(owner, spender) {
   });
 
   const tx = await client.sep41_allowance({ owner, spender });
-  const result = await tx.simulate();
+  const result = unwrapContractResult(await tx.simulate());
   return Number(result ?? 0);
 }
 

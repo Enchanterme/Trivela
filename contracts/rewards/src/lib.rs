@@ -1331,23 +1331,52 @@ impl RewardsContract {
         ensure_credit_not_paused(&env)?;
         check_and_increment_rate(&env, &from, recipients.len())?;
 
-        let mut staged = Vec::new(&env);
+        let mut staged: Vec<(Address, u64)> = Vec::new(&env);
+        let mut batch_total: u64 = 0;
 
         for (user, amount) in recipients.iter() {
             if amount == 0 {
                 return Err(Error::ZeroAmount);
             }
-            let key = (BALANCE, user.clone());
-            let current: u64 = env.storage().instance().get(&key).unwrap_or(0);
-            let new_balance = current.checked_add(amount).ok_or(Error::Overflow)?;
-            staged.push_back((user, new_balance));
+            batch_total = batch_total.checked_add(amount).ok_or(Error::Overflow)?;
+
+            // A recipient listed more than once accumulates onto its staged
+            // balance, so every amount is credited and the supply update below
+            // matches the sum of the balance changes exactly.
+            let mut staged_index: Option<u32> = None;
+            for (i, (staged_user, _)) in staged.iter().enumerate() {
+                if staged_user == user {
+                    staged_index = Some(i as u32);
+                    break;
+                }
+            }
+            match staged_index {
+                Some(i) => {
+                    let (staged_user, staged_balance) = staged.get(i).unwrap();
+                    let new_balance = staged_balance.checked_add(amount).ok_or(Error::Overflow)?;
+                    staged.set(i, (staged_user, new_balance));
+                }
+                None => {
+                    let key = (BALANCE, user.clone());
+                    let current: u64 = env.storage().instance().get(&key).unwrap_or(0);
+                    let new_balance = current.checked_add(amount).ok_or(Error::Overflow)?;
+                    staged.push_back((user, new_balance));
+                }
+            }
         }
+
+        // Keep TOTAL_SUPPLY == sum of balances (#1021, #1317): `credit` already
+        // does this; the batch path must too. Computed before any write so an
+        // overflow leaves state untouched.
+        let supply: u64 = env.storage().instance().get(&TOTAL_SUPPLY).unwrap_or(0);
+        let new_supply = supply.checked_add(batch_total).ok_or(Error::Overflow)?;
 
         for (user, new_balance) in staged.iter() {
             env.storage()
                 .instance()
                 .set(&(BALANCE, user.clone()), &new_balance);
         }
+        env.storage().instance().set(&TOTAL_SUPPLY, &new_supply);
 
         for (user, amount) in recipients.iter() {
             env.events().publish((CREDIT_EVENT, user), amount);
