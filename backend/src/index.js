@@ -31,6 +31,11 @@ import { createRpcPool } from './rpcPool.js';
 import { resolveStellarNetworkConfig } from './config/stellarNetwork.js';
 import { validateBackendEnv } from './config/envValidation.js';
 import { getRateTierLimits, DEFAULT_RATE_TIER } from './config/rateTiers.js';
+import {
+  createRouteRateLimitResolver,
+  DEFAULT_ROUTE_RATE_LIMITS,
+  parseRouteRateLimits,
+} from './config/routeRateLimits.js';
 import { createDal } from './dal/index.js';
 import { createJobRunner } from './jobs/jobRunner.js';
 import { WebhookService, WEBHOOK_EVENTS } from './services/webhookService.js';
@@ -718,6 +723,11 @@ export async function createApp(options = {}) {
     timeProvider: /** @type {any} */ (options.rateLimit)?.timeProvider,
     store: rateLimitStore,
     resolveLimits: resolveRateLimitForRequest,
+    resolveRouteLimit: createRouteRateLimitResolver(
+      /** @type {any} */ (options.rateLimit)?.routes ??
+        parseRouteRateLimits(process.env.RATE_LIMIT_ROUTES) ??
+        DEFAULT_ROUTE_RATE_LIMITS,
+    ),
     resolveMonthlyQuota: resolveMonthlyQuotaForRequest,
     getMonthlyUsage: getMonthlyUsageForRequest,
     incrementMonthlyUsage: incrementMonthlyUsageForRequest,

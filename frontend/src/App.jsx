@@ -25,7 +25,13 @@ const EmbedCampaign = lazy(() => import('./pages/EmbedCampaign'));
 const PublicProfile = lazy(() => import('./pages/PublicProfile'));
 const UserProfile = lazy(() => import('./pages/UserProfile'));
 const WebhookManagement = lazy(() => import('./pages/WebhookManagement'));
-import { applyTheme, getPreferredTheme, THEME_STORAGE_KEY } from './theme';
+import {
+  applyTheme,
+  getPreferredTheme,
+  getStoredTheme,
+  persistTheme,
+  subscribeToSystemTheme,
+} from './theme';
 import { getRuntimeConfig, initializeRuntimeConfig, setRuntimeStellarNetwork } from './config';
 import {
   connectWallet as connectWalletProvider,
@@ -54,11 +60,19 @@ export default function App() {
 
   useEffect(() => {
     applyTheme(theme);
-
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
-    }
   }, [theme]);
+
+  // Follow the OS preference until the user picks a theme themselves; an
+  // explicit choice (saved by toggleTheme) always wins.
+  useEffect(
+    () =>
+      subscribeToSystemTheme((systemTheme) => {
+        if (!getStoredTheme()) {
+          setTheme(systemTheme);
+        }
+      }),
+    [],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -81,7 +95,9 @@ export default function App() {
   }, []);
 
   const toggleTheme = () => {
-    setTheme((currentTheme) => (currentTheme === 'dark' ? 'light' : 'dark'));
+    const nextTheme = theme === 'dark' ? 'light' : 'dark';
+    persistTheme(nextTheme);
+    setTheme(nextTheme);
   };
 
   const loadWalletBalance = async (address) => {
