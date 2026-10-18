@@ -156,14 +156,31 @@ jobs:
           echo "**Minor violations**: Reported ℹ️" >> $GITHUB_STEP_SUMMARY
 
   cross-browser-e2e:
-    name: Cross-browser E2E (Chromium/Firefox/WebKit)
+    name: Cross-browser E2E (${{ matrix.browser }})
     runs-on: ubuntu-latest
     needs: frontend
 
+    # Desktop Chrome, Firefox, Safari (WebKit) and Edge plus mobile Chrome,
+    # Safari and Edge. `install` is the Playwright browser to download for the
+    # project (mobile Chrome/Safari reuse the Chromium/WebKit engines).
     strategy:
       fail-fast: false
       matrix:
-        browser: [chromium, firefox, webkit]
+        include:
+          - browser: chromium
+            install: chromium
+          - browser: firefox
+            install: firefox
+          - browser: webkit
+            install: webkit
+          - browser: edge
+            install: msedge
+          - browser: mobile-chrome
+            install: chromium
+          - browser: mobile-safari
+            install: webkit
+          - browser: mobile-edge
+            install: msedge
 
     steps:
       - name: Check out repository
@@ -185,7 +202,7 @@ jobs:
           path: frontend/dist
 
       - name: Install Playwright browser - ${{ matrix.browser }}
-        run: npx playwright install --with-deps ${{ matrix.browser }}
+        run: npx playwright install --with-deps ${{ matrix.install }}
 
       - name: Run E2E tests - ${{ matrix.browser }}
         run: npx playwright test --project=${{ matrix.browser }}
