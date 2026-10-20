@@ -28,7 +28,7 @@
     "generate": "npm run generate:api && npm run generate:contracts",
     "generate:api": "openapi-ts --input ../../backend/openapi.yaml --output src --plugins @hey-api/typescript",
     "generate:contracts": "node scripts/generate-bindings.mjs",
-    "build": "tsc",
+    "build": "node init && tsc",
     "prepublishOnly": "npm run generate && npm run build",
     "check-drift": "npm run generate && git diff --exit-code src/"
   },
