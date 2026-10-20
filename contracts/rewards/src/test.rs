@@ -243,8 +243,8 @@ fn test_batch_credit() {
 
 #[test]
 fn test_batch_credit_updates_total_supply() {
-    let (env, client, _admin) = setup_rewards();
-    let creditor = Address::generate(&env);
+    let (env, client, admin) = setup_rewards();
+    let creditor = admin.clone();
     let user_a = Address::generate(&env);
     let user_b = Address::generate(&env);
     env.mock_all_auths();
@@ -261,8 +261,8 @@ fn test_batch_credit_updates_total_supply() {
 
 #[test]
 fn test_batch_credit_duplicate_recipient_is_credited_in_full() {
-    let (env, client, _admin) = setup_rewards();
-    let creditor = Address::generate(&env);
+    let (env, client, admin) = setup_rewards();
+    let creditor = admin.clone();
     let user = Address::generate(&env);
     env.mock_all_auths();
 
@@ -275,8 +275,8 @@ fn test_batch_credit_duplicate_recipient_is_credited_in_full() {
 
 #[test]
 fn test_batch_credit_is_atomic_when_total_supply_would_overflow() {
-    let (env, client, _admin) = setup_rewards();
-    let creditor = Address::generate(&env);
+    let (env, client, admin) = setup_rewards();
+    let creditor = admin.clone();
     let funded = Address::generate(&env);
     let fresh = Address::generate(&env);
     env.mock_all_auths();
@@ -295,7 +295,7 @@ fn test_batch_credit_is_atomic_when_total_supply_would_overflow() {
 #[test]
 fn test_total_supply_equals_sum_of_balances_across_mixed_operations() {
     let (env, client, admin) = setup_rewards();
-    let creditor = Address::generate(&env);
+    let creditor = admin.clone();
     let a = Address::generate(&env);
     let b = Address::generate(&env);
     let c = Address::generate(&env);
@@ -326,6 +326,7 @@ fn test_credit_overflow_errors() {
     client.initialize(&admin, &symbol_short!("Trivela"), &symbol_short!("TVL"));
 
     env.mock_all_auths();
+    client.set_max_credit_per_call(&admin, &0);
     client.credit(&admin, &user, &u64::MAX);
 
     let result = client.try_credit(&admin, &user, &1);
@@ -376,6 +377,7 @@ fn test_batch_credit_is_atomic_on_overflow() {
     client.initialize(&admin, &symbol_short!("Trivela"), &symbol_short!("TVL"));
 
     env.mock_all_auths();
+    client.set_max_credit_per_call(&admin, &0);
     // Only user_b is funded: crediting user_a as well would push total_supply
     // past u64::MAX during setup (conservation invariant, issue #1021) instead
     // of overflowing user_b's balance in the batch under test.
@@ -1316,10 +1318,12 @@ fn test_propose_overwrites_previous_proposal() {
 /// Register + initialize a rewards contract and return `(env, client, admin)`.
 fn setup_rewards<'a>() -> (Env, RewardsContractClient<'a>, Address) {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, RewardsContract);
     let client = RewardsContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
     client.initialize(&admin, &symbol_short!("Trivela"), &symbol_short!("TVL"));
+    client.set_max_credit_per_call(&admin, &0);
     (env, client, admin)
 }
 
@@ -1349,7 +1353,7 @@ fn test_referral_config_rejects_invalid() {
 
 #[test]
 fn test_referral_config_requires_admin() {
-    let (env, client, _admin) = setup_rewards();
+    let (env, client, admin) = setup_rewards();
     let other = Address::generate(&env);
     env.mock_all_auths();
     assert_eq!(
@@ -1564,8 +1568,8 @@ fn test_prune_used_nonces_zero_max_is_noop() {
 
 #[test]
 fn test_credit_zero_amount_rejected() {
-    let (env, client, _admin) = setup_rewards();
-    let creditor = Address::generate(&env);
+    let (env, client, admin) = setup_rewards();
+    let creditor = admin.clone();
     let user = Address::generate(&env);
     env.mock_all_auths();
     assert_eq!(
@@ -1576,9 +1580,88 @@ fn test_credit_zero_amount_rejected() {
 }
 
 #[test]
+fn test_credit_unauthorized_caller_rejected() {
+    let (env, client, admin) = setup_rewards();
+    let mallory = Address::generate(&env);
+    let user = Address::generate(&env);
+    env.mock_all_auths();
+
+    assert_eq!(
+        client.try_credit(&mallory, &user, &500_000),
+        Err(Ok(Error::Unauthorized)),
+        "roleless caller must not mint points via credit"
+    );
+    assert_eq!(client.balance(&user), 0);
+    assert_eq!(client.total_supply(), 0);
+    let _ = admin;
+}
+
+#[test]
+fn test_batch_credit_unauthorized_caller_rejected() {
+    let (env, client, admin) = setup_rewards();
+    let mallory = Address::generate(&env);
+    let user = Address::generate(&env);
+    env.mock_all_auths();
+
+    let recipients = vec![&env, (user.clone(), 500_000u64)];
+    assert_eq!(
+        client.try_batch_credit(&mallory, &recipients),
+        Err(Ok(Error::Unauthorized)),
+        "roleless caller must not mint points via batch_credit"
+    );
+    assert_eq!(client.balance(&user), 0);
+    let _ = admin;
+}
+
+#[test]
+fn test_credit_vested_unauthorized_caller_rejected() {
+    let (env, client, admin) = setup_rewards();
+    let mallory = Address::generate(&env);
+    let user = Address::generate(&env);
+    env.mock_all_auths();
+
+    assert_eq!(
+        client.try_credit_vested(&mallory, &user, &1_000, &0, &100),
+        Err(Ok(Error::Unauthorized)),
+        "roleless caller must not mint vested points"
+    );
+    let _ = admin;
+}
+
+#[test]
+fn test_default_credit_cap_is_enforced() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RewardsContract);
+    let client = RewardsContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &symbol_short!("Trivela"), &symbol_short!("TVL"));
+    // Freshly initialized contract must not mint unlimited amounts per call.
+    assert_eq!(
+        client.try_credit(&admin, &user, &1_000_001),
+        Err(Ok(Error::CreditLimitExceeded))
+    );
+    assert_eq!(client.credit(&admin, &user, &1_000_000), 1_000_000);
+}
+
+#[test]
+fn test_co_admin_can_credit() {
+    let (env, client, admin) = setup_rewards();
+    let co_admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    env.mock_all_auths();
+
+    let pubkey = BytesN::from_array(&env, &[7u8; 32]);
+    client.add_co_admin(&admin, &co_admin, &pubkey);
+    assert_eq!(client.credit(&co_admin, &user, &250), 250);
+}
+
+#[test]
 fn test_claim_zero_amount_rejected() {
-    let (env, client, _admin) = setup_rewards();
-    let creditor = Address::generate(&env);
+    let (env, client, admin) = setup_rewards();
+    let creditor = admin.clone();
     let user = Address::generate(&env);
     env.mock_all_auths();
     client.credit(&creditor, &user, &1_000);
@@ -1592,7 +1675,7 @@ fn test_claim_zero_amount_rejected() {
 #[test]
 fn test_admin_transfer_zero_amount_rejected() {
     let (env, client, admin) = setup_rewards();
-    let creditor = Address::generate(&env);
+    let creditor = admin.clone();
     let from = Address::generate(&env);
     let to = Address::generate(&env);
     env.mock_all_auths();
@@ -1607,7 +1690,7 @@ fn test_admin_transfer_zero_amount_rejected() {
 #[test]
 fn test_admin_transfer_self_transfer_rejected() {
     let (env, client, admin) = setup_rewards();
-    let creditor = Address::generate(&env);
+    let creditor = admin.clone();
     let user = Address::generate(&env);
     env.mock_all_auths();
     client.credit(&creditor, &user, &500);
@@ -1620,7 +1703,7 @@ fn test_admin_transfer_self_transfer_rejected() {
 
 #[test]
 fn test_credit_vested_zero_amount_rejected() {
-    let (env, client, _admin) = setup_rewards();
+    let (env, client, admin) = setup_rewards();
     let from = Address::generate(&env);
     let user = Address::generate(&env);
     env.mock_all_auths();
@@ -1636,8 +1719,8 @@ fn test_credit_vested_zero_amount_rejected() {
 
 #[test]
 fn test_total_supply_increments_on_credit() {
-    let (env, client, _admin) = setup_rewards();
-    let creditor = Address::generate(&env);
+    let (env, client, admin) = setup_rewards();
+    let creditor = admin.clone();
     let user = Address::generate(&env);
     env.mock_all_auths();
     assert_eq!(client.total_supply(), 0);
@@ -1649,8 +1732,8 @@ fn test_total_supply_increments_on_credit() {
 
 #[test]
 fn test_total_supply_decrements_on_claim() {
-    let (env, client, _admin) = setup_rewards();
-    let creditor = Address::generate(&env);
+    let (env, client, admin) = setup_rewards();
+    let creditor = admin.clone();
     let user = Address::generate(&env);
     env.mock_all_auths();
     client.credit(&creditor, &user, &2_000);
@@ -1666,7 +1749,7 @@ fn test_total_supply_decrements_on_claim() {
 #[test]
 fn test_total_supply_conservation_across_multi_user_ops() {
     let (env, client, admin) = setup_rewards();
-    let creditor = Address::generate(&env);
+    let creditor = admin.clone();
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
     env.mock_all_auths();

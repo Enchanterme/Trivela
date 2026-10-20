@@ -417,6 +417,10 @@ const PAUSE_REDEEM_EVENT: Symbol = symbol_short!("psredeem");
 const MAX_CREDIT_EVENT: Symbol = symbol_short!("mxcredit");
 const CAMPAIGN_MULTIPLIER_EVENT: Symbol = symbol_short!("multset");
 const MAX_CREDIT_PER_CALL: Symbol = symbol_short!("mxcredit");
+/// Default per-call credit cap applied at initialization. `0` (set explicitly
+/// via `set_max_credit_per_call`) still disables the cap, but an uninitialized
+/// or freshly-initialized contract no longer mints without a limit.
+const DEFAULT_MAX_CREDIT_PER_CALL: u64 = 1_000_000;
 /// Minimum claim amount (issue #321). 0 means no minimum.
 const MIN_CLAIM: Symbol = symbol_short!("min_clm");
 const MIN_CLAIM_EVENT: Symbol = symbol_short!("minclmst");
@@ -705,6 +709,33 @@ fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+/// Authorize a point-minting caller (issue #1419).
+///
+/// `credit`/`batch_credit`/`credit_vested` mint balances that are redeemable
+/// for reserve tokens, so they are privileged. Only the admin or a registered
+/// co-admin may use these generic mint paths. Campaign-scoped operators must
+/// go through `credit_as_operator`, which enforces delegation + budget.
+fn require_credit_authority(env: &Env, caller: &Address) -> Result<(), Error> {
+    caller.require_auth();
+
+    if let Some(stored_admin) = env.storage().instance().get::<_, Address>(&ADMIN) {
+        if &stored_admin == caller {
+            return Ok(());
+        }
+    }
+
+    let co_admins: Vec<(Address, BytesN<32>)> = env
+        .storage()
+        .instance()
+        .get(&CO_ADMINS)
+        .unwrap_or_else(|| Vec::new(env));
+    if co_admins.iter().any(|(addr, _)| addr == *caller) {
+        return Ok(());
+    }
+
+    Err(Error::Unauthorized)
 }
 
 fn require_admin_with_nonce(env: &Env, admin: &Address, nonce: i128) -> Result<(), Error> {
@@ -1074,7 +1105,9 @@ impl RewardsContract {
         env.storage().instance().set(&CLAIMED, &0u64);
         env.storage().instance().set(&METADATA, &(name, symbol));
         env.storage().instance().set(&PAUSED, &false);
-        env.storage().instance().set(&MAX_CREDIT_PER_CALL, &0u64);
+        env.storage()
+            .instance()
+            .set(&MAX_CREDIT_PER_CALL, &DEFAULT_MAX_CREDIT_PER_CALL);
         env.storage()
             .instance()
             .set(&SCHEMA_VERSION, &CURRENT_SCHEMA_VERSION);
@@ -1253,7 +1286,7 @@ impl RewardsContract {
         if amount == 0 {
             return Err(Error::ZeroAmount);
         }
-        from.require_auth();
+        require_credit_authority(&env, &from)?;
         ensure_credit_not_paused(&env)?;
         check_and_increment_rate(&env, &from, 1)?;
 
@@ -1261,7 +1294,7 @@ impl RewardsContract {
             .storage()
             .instance()
             .get(&MAX_CREDIT_PER_CALL)
-            .unwrap_or(0);
+            .unwrap_or(DEFAULT_MAX_CREDIT_PER_CALL);
         if max_credit_per_call > 0 && amount > max_credit_per_call {
             return Err(Error::CreditLimitExceeded);
         }
@@ -1362,7 +1395,7 @@ impl RewardsContract {
         from: Address,
         recipients: Vec<(Address, u64)>,
     ) -> Result<(), Error> {
-        from.require_auth();
+        require_credit_authority(&env, &from)?;
         ensure_credit_not_paused(&env)?;
         check_and_increment_rate(&env, &from, recipients.len())?;
 
@@ -1927,7 +1960,7 @@ impl RewardsContract {
         if total_amount == 0 {
             return Err(Error::ZeroAmount);
         }
-        from.require_auth();
+        require_credit_authority(&env, &from)?;
         ensure_credit_not_paused(&env)?;
 
         let vest_ctr_key = (VEST_CTR, user.clone());
