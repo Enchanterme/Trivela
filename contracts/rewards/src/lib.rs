@@ -152,17 +152,6 @@ pub enum Error {
     // ── Distribution mode errors (issue #871) ─────────────────────────────────────
     /// Invalid distribution mode specified.
     InvalidDistributionMode = 49,
-    /// Below minimum claim amount.
-    BelowMinClaim = 50,
-    /// Invalid boost curve configuration.
-    InvalidBoostCurve = 51,
-    /// Zero boost multiplier not allowed.
-    ZeroBoostMultiplier = 52,
-    /// Invalid lock schedule configuration.
-    InvalidLockSchedule = 53,
-    // ── Issue #900: Minimum claim threshold ──────────────────────────────────
-    /// Claim amount is below the configured minimum threshold.
-    BelowMinClaim = 49,
     // ── Issue #903: Campaign supply cap ───────────────────────────────────────
     /// Credit would exceed the campaign's configured total supply cap.
     CampaignSupplyCapExceeded = 50,
@@ -199,6 +188,19 @@ pub enum Error {
     ClaimCooldownActive = 63,
     /// Invalid cooldown configuration.
     InvalidCooldownConfig = 64,
+    // ── Issue #900: Minimum claim threshold ──────────────────────────────────
+    /// Claim amount is below the configured minimum threshold.
+    BelowMinClaim = 65,
+    // ── Staking errors ───────────────────────────────────────────────────────
+    /// Staking position not found.
+    StakingNotFound = 66,
+    /// Staking position is still locked.
+    PositionLocked = 67,
+    // ── Timelock errors ──────────────────────────────────────────────────────
+    /// This exact operation is already queued in the timelock.
+    TimelockAlreadyQueued = 68,
+    /// No matching timelock entry is queued.
+    TimelockNotFound = 69,
 }
 
 // ── Issue #895: Operator delegation types ─────────────────────────────────────
@@ -245,6 +247,16 @@ pub struct VestingRecord {
     pub start_ledger: u32,
     pub end_ledger: u32,
     pub claimed: u64,
+}
+
+/// Merkle membership proof for airdrop claims.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct MerkleProof {
+    /// Sibling hashes from leaf level up to (but not including) the root.
+    pub siblings: Vec<BytesN<32>>,
+    /// Leaf position in the tree. Bit `k` (LSB first) selects left/right at level `k`.
+    pub leaf_index: u32,
 }
 
 // ── Staking types ──────────────────────────────────────────────────────────
@@ -297,7 +309,7 @@ pub struct BoostCurve {
     /// Ledger duration for maximum boost
     pub max_duration_ledgers: u32,
     /// Curve type (0 = linear, 1 = logarithmic, 2 = exponential)
-    pub curve_type: u8,
+    pub curve_type: u32,
 }
 
 // ── Multi-sig types (issue #733) ─────────────────────────────────────────────
@@ -407,6 +419,10 @@ const PAUSE_REDEEM_EVENT: Symbol = symbol_short!("psredeem");
 const MAX_CREDIT_EVENT: Symbol = symbol_short!("mxcredit");
 const CAMPAIGN_MULTIPLIER_EVENT: Symbol = symbol_short!("multset");
 const MAX_CREDIT_PER_CALL: Symbol = symbol_short!("mxcredit");
+/// Default per-call credit cap applied at initialization. `0` (set explicitly
+/// via `set_max_credit_per_call`) still disables the cap, but an uninitialized
+/// or freshly-initialized contract no longer mints without a limit.
+const DEFAULT_MAX_CREDIT_PER_CALL: u64 = 1_000_000;
 /// Minimum claim amount (issue #321). 0 means no minimum.
 const MIN_CLAIM: Symbol = symbol_short!("min_clm");
 const MIN_CLAIM_EVENT: Symbol = symbol_short!("minclmst");
@@ -659,6 +675,29 @@ pub struct ClawbackProposal {
 #[contract]
 pub struct RewardsContract;
 
+fn merkle_hash_pair(env: &Env, a: &BytesN<32>, b: &BytesN<32>) -> BytesN<32> {
+    let mut combined = [0u8; 64];
+    combined[..32].copy_from_slice(&a.to_array());
+    combined[32..].copy_from_slice(&b.to_array());
+    env.crypto()
+        .sha256(&Bytes::from_slice(env, &combined))
+        .into()
+}
+
+fn verify_airdrop_proof(env: &Env, leaf: &BytesN<32>, proof: &MerkleProof, root: &BytesN<32>) -> bool {
+    let mut current = leaf.clone();
+    let mut index = proof.leaf_index;
+    for sibling in proof.siblings.iter() {
+        current = if index & 1 == 0 {
+            merkle_hash_pair(env, &current, &sibling)
+        } else {
+            merkle_hash_pair(env, &sibling, &current)
+        };
+        index >>= 1;
+    }
+    &current == root
+}
+
 fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {
     admin.require_auth();
 
@@ -672,6 +711,33 @@ fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+/// Authorize a point-minting caller (issue #1419).
+///
+/// `credit`/`batch_credit`/`credit_vested` mint balances that are redeemable
+/// for reserve tokens, so they are privileged. Only the admin or a registered
+/// co-admin may use these generic mint paths. Campaign-scoped operators must
+/// go through `credit_as_operator`, which enforces delegation + budget.
+fn require_credit_authority(env: &Env, caller: &Address) -> Result<(), Error> {
+    caller.require_auth();
+
+    if let Some(stored_admin) = env.storage().instance().get::<_, Address>(&ADMIN) {
+        if &stored_admin == caller {
+            return Ok(());
+        }
+    }
+
+    let co_admins: Vec<(Address, BytesN<32>)> = env
+        .storage()
+        .instance()
+        .get(&CO_ADMINS)
+        .unwrap_or_else(|| Vec::new(env));
+    if co_admins.iter().any(|(addr, _)| addr == *caller) {
+        return Ok(());
+    }
+
+    Err(Error::Unauthorized)
 }
 
 fn require_admin_with_nonce(env: &Env, admin: &Address, nonce: i128) -> Result<(), Error> {
@@ -1020,7 +1086,7 @@ fn isqrt(n: u64) -> u64 {
 /// Linear mode: returns amount as-is.
 /// Quadratic mode: returns isqrt(amount) to reduce whale dominance.
 fn apply_distribution_mode(env: &Env, campaign_id: u64, base_amount: u64) -> u64 {
-    let mode: u8 = env
+    let mode: u32 = env
         .storage()
         .instance()
         .get(&(DIST_MODE, campaign_id))
@@ -1041,7 +1107,9 @@ impl RewardsContract {
         env.storage().instance().set(&CLAIMED, &0u64);
         env.storage().instance().set(&METADATA, &(name, symbol));
         env.storage().instance().set(&PAUSED, &false);
-        env.storage().instance().set(&MAX_CREDIT_PER_CALL, &0u64);
+        env.storage()
+            .instance()
+            .set(&MAX_CREDIT_PER_CALL, &DEFAULT_MAX_CREDIT_PER_CALL);
         env.storage()
             .instance()
             .set(&SCHEMA_VERSION, &CURRENT_SCHEMA_VERSION);
@@ -1178,7 +1246,7 @@ impl RewardsContract {
         env: Env,
         admin: Address,
         campaign_id: u64,
-        mode: u8,
+        mode: u32,
     ) -> Result<(), Error> {
         require_admin(&env, &admin)?;
         if mode > 1 {
@@ -1195,7 +1263,7 @@ impl RewardsContract {
 
     /// Get distribution mode for a campaign (0 = Linear, 1 = Quadratic).
     /// Defaults to Linear (0) if not set.
-    pub fn distribution_mode(env: Env, campaign_id: u64) -> u8 {
+    pub fn distribution_mode(env: Env, campaign_id: u64) -> u32 {
         env.storage()
             .instance()
             .get(&(DIST_MODE, campaign_id))
@@ -1220,7 +1288,7 @@ impl RewardsContract {
         if amount == 0 {
             return Err(Error::ZeroAmount);
         }
-        from.require_auth();
+        require_credit_authority(&env, &from)?;
         ensure_credit_not_paused(&env)?;
         check_and_increment_rate(&env, &from, 1)?;
 
@@ -1228,7 +1296,7 @@ impl RewardsContract {
             .storage()
             .instance()
             .get(&MAX_CREDIT_PER_CALL)
-            .unwrap_or(0);
+            .unwrap_or(DEFAULT_MAX_CREDIT_PER_CALL);
         if max_credit_per_call > 0 && amount > max_credit_per_call {
             return Err(Error::CreditLimitExceeded);
         }
@@ -1329,7 +1397,7 @@ impl RewardsContract {
         from: Address,
         recipients: Vec<(Address, u64)>,
     ) -> Result<(), Error> {
-        from.require_auth();
+        require_credit_authority(&env, &from)?;
         ensure_credit_not_paused(&env)?;
         check_and_increment_rate(&env, &from, recipients.len())?;
 
@@ -1894,7 +1962,7 @@ impl RewardsContract {
         if total_amount == 0 {
             return Err(Error::ZeroAmount);
         }
-        from.require_auth();
+        require_credit_authority(&env, &from)?;
         ensure_credit_not_paused(&env)?;
 
         let vest_ctr_key = (VEST_CTR, user.clone());
@@ -2108,7 +2176,7 @@ impl RewardsContract {
         }
 
         // Calculate boosted rewards
-        let boosted_amount = calculate_boosted_amount(position.amount, position.boost_multiplier_bps)?;
+        let boosted_amount = Self::calculate_boosted_amount(position.amount, position.boost_multiplier_bps)?;
         let total_to_claim = boosted_amount;
 
         // Check if already claimed
@@ -2199,7 +2267,7 @@ impl RewardsContract {
             if let Some(position) = env.storage().instance().get::<_, StakingPosition>(&key) {
                 // Check if position is unlocked
                 if now >= position.unlocks_at {
-                    let boosted_amount = calculate_boosted_amount(position.amount, position.boost_multiplier_bps)
+                    let boosted_amount = Self::calculate_boosted_amount(position.amount, position.boost_multiplier_bps)
                         .unwrap_or(0);
                     let available = boosted_amount.saturating_sub(position.claimed);
                     total_available = total_available.saturating_add(available);
@@ -4098,20 +4166,19 @@ impl RewardsContract {
 
     /// Claim airdrop rewards using a valid Merkle proof and nullifier (private).
     /// Proof structure: MerkleProof { siblings: Vec<BytesN<32>>, leaf_index: u32 }
-    /// leaf_preimage: Poseidon(secret_seed, amount_encoded)
     /// nullifier: Hash of (secret, caller address) to prevent double-claiming
     pub fn claim_airdrop(
         env: Env,
         claimer: Address,
         amount: u64,
         leaf_preimage: BytesN<32>,
-        proof: crate::merkle::MerkleProof,
+        proof: MerkleProof,
         nullifier: BytesN<32>,
     ) -> Result<u64, Error> {
         claimer.require_auth();
 
         // Check that airdrop root is configured
-        let root = env
+        let root: BytesN<32> = env
             .storage()
             .instance()
             .get(&AIRDROP_ROOT)
@@ -4129,8 +4196,9 @@ impl RewardsContract {
         }
 
         // Verify Merkle proof
-        crate::merkle::verify(&env, &root, &leaf_preimage, &proof)
-            .map_err(|_| Error::AirdropInvalidProof)?;
+        if !verify_airdrop_proof(&env, &leaf_preimage, &proof, &root) {
+            return Err(Error::AirdropInvalidProof);
+        }
 
         // Mark nullifier as used
         env.storage().persistent().set(&nullifier_key, &true);

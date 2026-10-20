@@ -169,3 +169,28 @@ export function buildReactSnippet(origin, options) {
     '/>',
   ].join('\n');
 }
+
+/**
+ * Copy-paste HTML/JS `<script>` snippet for third-party blogs (issue #1370).
+ * Loads `/embed.js` which auto-mounts the widget next to the script tag.
+ * @param {string} origin
+ * @param {Parameters<typeof validateEmbedOptions>[0]} options
+ */
+export function buildScriptSnippet(origin, options) {
+  const result = validateEmbedOptions(options);
+  if (!result.ok) throw new Error(`Invalid embed options: ${result.errors.join('; ')}`);
+  const v = result.value;
+  const attrs = [
+    `src="${escapeAttr(`${origin}/embed.js`)}"`,
+    `data-campaign="${escapeAttr(v.campaignId)}"`,
+    `data-widget="${escapeAttr(v.widget)}"`,
+    `data-theme="${escapeAttr(v.theme)}"`,
+    v.color && `data-color="${escapeAttr(v.color)}"`,
+    v.partner && `data-partner="${escapeAttr(v.partner)}"`,
+    v.org && `data-org="${escapeAttr(v.org)}"`,
+    v.limit !== undefined && `data-limit="${v.limit}"`,
+    'data-trivela-manual="false"',
+    'async',
+  ].filter(Boolean);
+  return ['<script', ...attrs.map((a) => `  ${a}`), '></script>'].join('\n');
+}

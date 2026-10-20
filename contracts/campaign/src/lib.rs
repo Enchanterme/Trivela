@@ -103,6 +103,8 @@ pub enum Error {
     NotInAddressAllowlist = 125,
     /// Address is in the address blocklist when blocklist is enabled.
     InAddressBlocklist = 126,
+    /// Participation fee configuration is invalid (zero amount or missing token).
+    InvalidFeeConfig = 127,
 }
 
 contractmeta!(key = "Description", val = "Trivela campaign configuration");
@@ -139,6 +141,9 @@ const END_TIME: Symbol = symbol_short!("end");
 const MAX_CAP: Symbol = symbol_short!("maxcap");
 const PARTICIPANT_COUNT: Symbol = symbol_short!("count");
 const MERKLE_ROOT: Symbol = symbol_short!("mkroot");
+const FEE_CONFIG: Symbol = symbol_short!("feecfg");
+const FEE_COLLECTED_EVENT: Symbol = symbol_short!("feepaid");
+const SET_FEE_EVENT: Symbol = symbol_short!("feeset");
 const SCHEMA_VERSION: Symbol = symbol_short!("schema_v");
 const CURRENT_SCHEMA_VERSION: u32 = 1;
 const ADMIN_NONCE: Symbol = symbol_short!("anonce");
@@ -250,6 +255,45 @@ pub struct ActivityEntry {
     pub actor: Address,
     pub amount: Option<u64>,
     pub ledger: u32,
+}
+
+/// Per-campaign participation fee (issue #1371).
+///
+/// When configured, every successful new registration transfers `amount`
+/// of `token` from the participant to `recipient` (the reward pool).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ParticipationFee {
+    /// SEP-41 / SAC token used to charge the fee.
+    pub token: Address,
+    /// Fee amount in token units (smallest denomination).
+    pub amount: u64,
+    /// Where the fee is forwarded — the campaign reward pool.
+    pub recipient: Address,
+}
+
+/// Instance-storage configuration snapshot (issue #1372).
+///
+/// Exported via `export_state` for offline inspection and restored via
+/// `import_state` for local testnet seeding. Participant records are
+/// deliberately out of scope.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct CampaignStateDump {
+    pub admin: Address,
+    pub active: bool,
+    pub start_time: u64,
+    pub end_time: u64,
+    pub max_cap: u64,
+    pub participant_count: u64,
+    pub merkle_root: Option<BytesN<32>>,
+    /// 0 = None, 1 = Merkle, 2 = Zk.
+    pub privacy_mode: u32,
+    pub invite_only: bool,
+    pub fee_token: Option<Address>,
+    pub fee_amount: u64,
+    pub fee_recipient: Option<Address>,
+    pub schema_version: u32,
 }
 
 // #280 — TTL thresholds for the per-participant persistent storage
@@ -713,6 +757,138 @@ impl CampaignContract {
     /// Return the current Merkle root, or `None` when open registration is active.
     pub fn get_merkle_root(env: Env) -> Option<BytesN<32>> {
         env.storage().instance().get(&MERKLE_ROOT)
+    }
+
+    /// Configure a participation fee charged on every new registration
+    /// (admin only). The fee is transferred from the participant to
+    /// `recipient` (reward pool) in `token` units of `amount`.
+    ///
+    /// Pass `amount = 0` to clear the fee and restore free registration.
+    pub fn set_participation_fee(
+        env: Env,
+        admin: Address,
+        nonce: u64,
+        token: Address,
+        amount: u64,
+        recipient: Address,
+    ) -> Result<(), Error> {
+        require_admin_with_nonce(&env, &admin, nonce)?;
+        if amount == 0 {
+            env.storage().instance().remove(&FEE_CONFIG);
+            env.events().publish((SET_FEE_EVENT,), 0u64);
+            env.storage()
+                .instance()
+                .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+            return Ok(());
+        }
+        let fee = ParticipationFee {
+            token,
+            amount,
+            recipient,
+        };
+        env.storage().instance().set(&FEE_CONFIG, &fee);
+        env.events().publish((SET_FEE_EVENT,), amount);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+        Ok(())
+    }
+
+    /// Return the configured participation fee, or `None` when registration is free.
+    pub fn participation_fee(env: Env) -> Option<ParticipationFee> {
+        env.storage().instance().get(&FEE_CONFIG)
+    }
+
+    /// Export the campaign's instance-storage configuration for offline
+    /// inspection and local testnet seeding (issue #1372).
+    pub fn export_state(env: Env) -> CampaignStateDump {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN)
+            .unwrap_or_else(|| Self::admin(env.clone()));
+        let privacy_mode = match env
+            .storage()
+            .instance()
+            .get::<_, PrivacyMode>(&PRIVACY_MODE)
+            .unwrap_or(PrivacyMode::None)
+        {
+            PrivacyMode::Merkle => 1u32,
+            PrivacyMode::Zk => 2u32,
+            PrivacyMode::None => 0u32,
+        };
+        let fee = env.storage().instance().get::<_, ParticipationFee>(&FEE_CONFIG);
+        CampaignStateDump {
+            admin,
+            active: env.storage().instance().get(&CAMPAIGN_ACTIVE).unwrap_or(false),
+            start_time: env.storage().instance().get(&START_TIME).unwrap_or(0),
+            end_time: env.storage().instance().get(&END_TIME).unwrap_or(u64::MAX),
+            max_cap: env.storage().instance().get(&MAX_CAP).unwrap_or(0),
+            participant_count: env.storage().instance().get(&PARTICIPANT_COUNT).unwrap_or(0),
+            merkle_root: env.storage().instance().get(&MERKLE_ROOT),
+            privacy_mode,
+            invite_only: env.storage().instance().get(&INVITE_ONLY).unwrap_or(false),
+            fee_token: fee.as_ref().map(|f| f.token.clone()),
+            fee_amount: fee.as_ref().map(|f| f.amount).unwrap_or(0),
+            fee_recipient: fee.as_ref().map(|f| f.recipient.clone()),
+            schema_version: Self::schema_version(env.clone()),
+        }
+    }
+
+    /// Restore a previously exported campaign configuration (admin only).
+    ///
+    /// Intended for local testnet seeding / migration. Participant records are
+    /// not rewritten — only the instance-storage configuration is restored.
+    pub fn import_state(
+        env: Env,
+        admin: Address,
+        nonce: u64,
+        state: CampaignStateDump,
+    ) -> Result<(), Error> {
+        require_admin_with_nonce(&env, &admin, nonce)?;
+        if state.schema_version != CURRENT_SCHEMA_VERSION {
+            return Err(Error::UnsupportedMigration);
+        }
+        env.storage().instance().set(&ADMIN, &state.admin);
+        env.storage().instance().set(&CAMPAIGN_ACTIVE, &state.active);
+        env.storage().instance().set(&START_TIME, &state.start_time);
+        env.storage().instance().set(&END_TIME, &state.end_time);
+        env.storage().instance().set(&MAX_CAP, &state.max_cap);
+        env.storage()
+            .instance()
+            .set(&PARTICIPANT_COUNT, &state.participant_count);
+        if let Some(root) = state.merkle_root.clone() {
+            env.storage().instance().set(&MERKLE_ROOT, &root);
+        } else {
+            env.storage().instance().remove(&MERKLE_ROOT);
+        }
+        let mode = match state.privacy_mode {
+            1 => PrivacyMode::Merkle,
+            2 => PrivacyMode::Zk,
+            _ => PrivacyMode::None,
+        };
+        env.storage().instance().set(&PRIVACY_MODE, &mode);
+        env.storage().instance().set(&INVITE_ONLY, &state.invite_only);
+        match (state.fee_token, state.fee_recipient) {
+            (Some(token), Some(recipient)) if state.fee_amount > 0 => {
+                let fee = ParticipationFee {
+                    token,
+                    amount: state.fee_amount,
+                    recipient,
+                };
+                env.storage().instance().set(&FEE_CONFIG, &fee);
+            }
+            _ => {
+                env.storage().instance().remove(&FEE_CONFIG);
+            }
+        }
+        env.storage()
+            .instance()
+            .set(&SCHEMA_VERSION, &state.schema_version);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+        Ok(())
     }
 
     /// Set the privacy mode for this campaign (admin only).
@@ -1889,6 +2065,21 @@ impl CampaignContract {
 /// Shared registration logic used by both `register` and `register_private`.
 /// Expects auth and pre-condition checks (active, window, merkle) to have
 /// been performed by the caller.
+/// Charge the participation fee (if configured) from `participant` to the
+/// reward pool. Called only for genuinely new registrations.
+fn collect_participation_fee(env: &Env, participant: &Address) -> Result<(), Error> {
+    let fee: ParticipationFee = match env.storage().instance().get(&FEE_CONFIG) {
+        Some(f) => f,
+        None => return Ok(()),
+    };
+    use soroban_sdk::token;
+    let token_client = token::Client::new(env, &fee.token);
+    token_client.transfer(participant, &fee.recipient, &(fee.amount as i128));
+    env.events()
+        .publish((FEE_COLLECTED_EVENT, participant.clone()), fee.amount);
+    Ok(())
+}
+
 fn do_register(env: &Env, participant: Address, referrer: Option<Address>) -> Result<bool, Error> {
     // Check address restrictions (allowlist/blocklist)
     check_address_restrictions(env, &participant)?;
@@ -2042,9 +2233,11 @@ fn do_register(env: &Env, participant: Address, referrer: Option<Address>) -> Re
             );
 
             env.events()
-                .publish((REFERRED_EVENT, participant, referrer), ());
+                .publish((REFERRED_EVENT, participant.clone(), referrer), ());
         }
     }
+
+    collect_participation_fee(env, &participant)?;
 
     env.storage()
         .instance()

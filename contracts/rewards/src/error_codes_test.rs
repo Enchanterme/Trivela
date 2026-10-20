@@ -56,11 +56,6 @@ fn error_codes_are_in_rewards_range() {
             Error::AirdropInvalidProof as u32,
             Error::AirdropNullifierUsed as u32,
             Error::InvalidDistributionMode as u32,
-            Error::BelowMinClaim as u32,
-            Error::InvalidBoostCurve as u32,
-            Error::ZeroBoostMultiplier as u32,
-            Error::InvalidLockSchedule as u32,
-            Error::BelowMinClaim as u32,
             Error::CampaignSupplyCapExceeded as u32,
             Error::InvalidSupplyCap as u32,
             Error::InvalidReferralDepth as u32,
@@ -76,6 +71,11 @@ fn error_codes_are_in_rewards_range() {
             Error::InvalidAssetConfig as u32,
             Error::ClaimCooldownActive as u32,
             Error::InvalidCooldownConfig as u32,
+            Error::BelowMinClaim as u32,
+            Error::StakingNotFound as u32,
+            Error::PositionLocked as u32,
+            Error::TimelockAlreadyQueued as u32,
+            Error::TimelockNotFound as u32,
         ],
     );
 }

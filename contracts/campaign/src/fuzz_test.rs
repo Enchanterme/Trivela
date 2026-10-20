@@ -94,8 +94,12 @@ proptest! {
             if should_retry && !participants.is_empty() {
                 let idx = participants.len() / 2;
                 let p = &participants[idx];
-                let registered = client.register(p, &leaf, &proof, &None, &None);
-                assert!(!registered, "Re-registration should return false");
+                let registered = client.try_register(p, &leaf, &proof, &None, &None);
+                assert_eq!(
+                    registered,
+                    Err(Ok(Error::NullifierAlreadyUsed)),
+                    "Re-registration should hit the participation barrier"
+                );
             }
         }
 

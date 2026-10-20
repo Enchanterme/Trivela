@@ -10,7 +10,7 @@
 
 use crate::{RewardsContract, RewardsContractClient, Error};
 use soroban_sdk::{
-    contract, contractimpl, testutils::Address as _, token, Address, Env, IntoVal, Symbol,
+    contract, contractimpl, symbol_short, testutils::Address as _, token, Address, Env, IntoVal, Symbol,
 };
 
 /// Malicious token contract that attempts to reenter the rewards contract
@@ -20,32 +20,15 @@ pub struct MaliciousToken;
 
 /// Tracks reentrancy attempts for verification
 pub mod reentrancy_state {
-    use soroban_sdk::Env;
-    use super::*;
-    
-    const REENTRY_ATTEMPTED: &str = "REENTRY_ATT";
-    const TARGET_CONTRACT: &str = "TARGET_CTR";
-    const ATTACK_TYPE: &str = "ATTACK_TYP";
-    
-    #[derive(Clone, Debug, Eq, PartialEq)]
-    pub enum AttackType {
-        DoubleRedeem,
-        DoubleWithdraw,
-        BalanceManipulation,
-    }
-    
-    pub fn set_target(env: &Env, target: &Address) {
-        env.storage().temporary().set(&TARGET_CONTRACT, target);
-    }
-    
-    pub fn set_attack_type(env: &Env, attack: AttackType) {
-        env.storage().temporary().set(&ATTACK_TYPE, &attack);
-    }
-    
+    use soroban_sdk::{symbol_short, Env, Symbol};
+
+    const REENTRY_ATTEMPTED: Symbol = symbol_short!("REENTRY");
+
     pub fn mark_reentry_attempted(env: &Env) {
         env.storage().temporary().set(&REENTRY_ATTEMPTED, &true);
     }
-    
+
+    #[allow(dead_code)]
     pub fn was_reentry_attempted(env: &Env) -> bool {
         env.storage().temporary().get(&REENTRY_ATTEMPTED).unwrap_or(false)
     }
@@ -66,7 +49,7 @@ impl token::Interface for MaliciousToken {
         1_000_000_000
     }
 
-    fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+    fn transfer(env: Env, from: Address, to: soroban_sdk::MuxedAddress, amount: i128) {
         from.require_auth();
         
         // Attempt reentrancy attack during transfer
@@ -124,21 +107,16 @@ fn test_redeem_reentrancy_safe() {
     let malicious_token_id = env.register_contract(None, MaliciousToken);
     
     // Initialize rewards contract
-    rewards_client.initialize(&admin, &100_000_000);
+    rewards_client.initialize(&admin, &symbol_short!("TEST"), &symbol_short!("TST"));
     
     // Set up redemption with malicious token
-    rewards_client.set_redemption_config(
-        &admin,
-        &malicious_token_id,
-        &10_000, // 1:1 rate
-        &0,
-    );
+    rewards_client.set_redemption_rate(&admin, &0, &malicious_token_id, &10_000);
     
     // Fund reserve (will use malicious token)
     rewards_client.fund_reserve(&admin, &1_000_000);
     
     // Credit user with points
-    rewards_client.credit(&admin, &user, &500_000, &0);
+    rewards_client.credit(&admin, &user, &500_000);
     
     // Attempt redeem with malicious token that tries to reenter
     let result = rewards_client.try_redeem(&user, &100_000);
@@ -171,15 +149,10 @@ fn test_withdraw_reserve_reentrancy_safe() {
     let malicious_token_id = env.register_contract(None, MaliciousToken);
     
     // Initialize
-    rewards_client.initialize(&admin, &100_000_000);
+    rewards_client.initialize(&admin, &symbol_short!("TEST"), &symbol_short!("TST"));
     
     // Set up redemption with malicious token
-    rewards_client.set_redemption_config(
-        &admin,
-        &malicious_token_id,
-        &10_000,
-        &0,
-    );
+    rewards_client.set_redemption_rate(&admin, &0, &malicious_token_id, &10_000);
     
     // Fund reserve
     rewards_client.fund_reserve(&admin, &1_000_000);
@@ -214,15 +187,10 @@ fn test_fund_reserve_reentrancy_safe() {
     let malicious_token_id = env.register_contract(None, MaliciousToken);
     
     // Initialize
-    rewards_client.initialize(&admin, &100_000_000);
+    rewards_client.initialize(&admin, &symbol_short!("TEST"), &symbol_short!("TST"));
     
     // Set up redemption with malicious token
-    rewards_client.set_redemption_config(
-        &admin,
-        &malicious_token_id,
-        &10_000,
-        &0,
-    );
+    rewards_client.set_redemption_rate(&admin, &0, &malicious_token_id, &10_000);
     
     // Fund reserve with malicious token that tries to reenter
     let result = rewards_client.try_fund_reserve(&funder, &1_000_000);
@@ -255,10 +223,10 @@ fn test_redeem_prevents_double_withdrawal_on_reentry() {
     
     let malicious_token_id = env.register_contract(None, MaliciousToken);
     
-    rewards_client.initialize(&admin, &100_000_000);
-    rewards_client.set_redemption_config(&admin, &malicious_token_id, &10_000, &0);
+    rewards_client.initialize(&admin, &symbol_short!("TEST"), &symbol_short!("TST"));
+    rewards_client.set_redemption_rate(&admin, &0, &malicious_token_id, &10_000);
     rewards_client.fund_reserve(&admin, &1_000_000);
-    rewards_client.credit(&admin, &user, &1_000_000, &0);
+    rewards_client.credit(&admin, &user, &1_000_000);
     
     // First redeem
     let result1 = rewards_client.try_redeem(&user, &600_000);
@@ -273,7 +241,7 @@ fn test_redeem_prevents_double_withdrawal_on_reentry() {
     // Attempting another redeem for more than remaining balance should fail
     let result2 = rewards_client.try_redeem(&user, &500_000);
     assert!(result2.is_err());
-    assert_eq!(result2.err(), Some(Ok(Error::InsufficientBalance)));
+    assert_eq!(result2.err(), Some(Ok(Error::InsufficientReserve)));
     
     // State should remain consistent
     assert_eq!(rewards_client.balance(&user), 400_000);
@@ -292,8 +260,8 @@ fn test_withdrawal_bounded_by_reserve_after_state_update() {
     
     let malicious_token_id = env.register_contract(None, MaliciousToken);
     
-    rewards_client.initialize(&admin, &100_000_000);
-    rewards_client.set_redemption_config(&admin, &malicious_token_id, &10_000, &0);
+    rewards_client.initialize(&admin, &symbol_short!("TEST"), &symbol_short!("TST"));
+    rewards_client.set_redemption_rate(&admin, &0, &malicious_token_id, &10_000);
     rewards_client.fund_reserve(&admin, &500_000);
     
     // Withdraw most of the reserve

@@ -9,7 +9,7 @@ fn build_two_leaf_tree(
     env: &Env,
     leaf1: BytesN<32>,
     leaf2: BytesN<32>,
-) -> (BytesN<32>, crate::merkle::MerkleProof, crate::merkle::MerkleProof) {
+) -> (BytesN<32>, crate::MerkleProof, crate::MerkleProof) {
     // Simplified tree for testing:
     // The actual tree building happens here with Poseidon hashing.
     // For now, we use a mock approach compatible with the merkle module.
@@ -23,12 +23,12 @@ fn build_two_leaf_tree(
     siblings2.push_back(leaf1.clone());
 
     // For a simple two-leaf tree, leaf indices are 0 and 1
-    let proof1 = crate::merkle::MerkleProof {
+    let proof1 = crate::MerkleProof {
         siblings: siblings1,
         leaf_index: 0,
     };
 
-    let proof2 = crate::merkle::MerkleProof {
+    let proof2 = crate::MerkleProof {
         siblings: siblings2,
         leaf_index: 1,
     };
@@ -58,8 +58,7 @@ fn test_airdrop_set_merkle_root_requires_admin() {
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
 
     // Admin can set root
-    let result = client.set_airdrop_merkle_root(&admin, &root);
-    assert!(result.is_ok());
+    client.set_airdrop_merkle_root(&admin, &root);
 
     // Verify root is stored
     let stored_root = client.get_airdrop_merkle_root();
@@ -80,7 +79,7 @@ fn test_airdrop_claim_without_root_fails() {
     let leaf = BytesN::from_array(&env, &[3u8; 32]);
     let mut siblings = soroban_sdk::Vec::new(&env);
     siblings.push_back(BytesN::from_array(&env, &[4u8; 32]));
-    let proof = crate::merkle::MerkleProof {
+    let proof = crate::MerkleProof {
         siblings,
         leaf_index: 0,
     };

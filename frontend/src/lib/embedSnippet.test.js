@@ -4,6 +4,7 @@ import {
   buildEmbedUrl,
   buildIframeSnippet,
   buildReactSnippet,
+  buildScriptSnippet,
   validateEmbedOptions,
 } from './embedSnippet.js';
 
@@ -91,5 +92,38 @@ describe('buildReactSnippet', () => {
     expect(snippet).toContain('  partner="acme"');
     expect(snippet).not.toContain('color=');
     expect(snippet.trim().endsWith('/>')).toBe(true);
+  });
+});
+
+describe('buildScriptSnippet (#1370)', () => {
+  it('produces an HTML/JS script tag blogs can paste', () => {
+    const snippet = buildScriptSnippet(ORIGIN, {
+      campaignId: 42,
+      widget: 'leaderboard',
+      theme: 'light',
+      limit: 10,
+      partner: 'blog',
+    });
+    expect(snippet).toContain('src="https://trivela.app/embed.js"');
+    expect(snippet).toContain('data-campaign="42"');
+    expect(snippet).toContain('data-widget="leaderboard"');
+    expect(snippet).toContain('data-theme="light"');
+    expect(snippet).toContain('data-limit="10"');
+    expect(snippet).toContain('data-partner="blog"');
+    expect(snippet.trim().endsWith('></script>')).toBe(true);
+  });
+
+  it('omits optional attributes that are not set', () => {
+    const snippet = buildScriptSnippet(ORIGIN, { campaignId: 7, widget: 'card' });
+    expect(snippet).toContain('data-widget="card"');
+    expect(snippet).not.toContain('data-limit=');
+    expect(snippet).not.toContain('data-partner=');
+    expect(snippet).not.toContain('data-color=');
+  });
+
+  it('throws on invalid options', () => {
+    expect(() => buildScriptSnippet(ORIGIN, { campaignId: '', widget: 'leaderboard' })).toThrow(
+      /Invalid embed options/,
+    );
   });
 });
