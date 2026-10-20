@@ -45,6 +45,8 @@ use soroban_sdk::{
 };
 
 pub mod groth16;
+pub mod types;
+use types::DataKey;
 
 #[cfg(test)]
 mod error_codes_test;
@@ -4747,6 +4749,154 @@ impl RewardsContract {
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
 
         Ok(new_balance)
+    }
+
+    // ── Issue #1173: Multi-token reward pool support ───────────────────────────
+
+    /// Add a supported reward asset (admin only).
+    pub fn add_reward_asset(env: Env, asset: Address) -> Result<(), Error> {
+        let admin: Address = get_admin(&env)?;
+        admin.require_auth();
+
+        let mut assets: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SupportedAssets)
+            .unwrap_or(Vec::new(&env));
+
+        for existing in assets.iter() {
+            if existing == asset {
+                return Ok(());
+            }
+        }
+
+        assets.push_back(asset.clone());
+        env.storage()
+            .instance()
+            .set(&DataKey::SupportedAssets, &assets);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+
+        let pool_key = DataKey::RewardPool(asset.clone());
+        if !env.storage().persistent().has(&pool_key) {
+            env.storage().persistent().set(&pool_key, &0i128);
+            env.storage()
+                .persistent()
+                .extend_ttl(&pool_key, TTL_THRESHOLD, TTL_EXTEND_TO);
+        }
+
+        Ok(())
+    }
+
+    /// Credit rewards into a specific asset pool (admin only).
+    pub fn credit_rewards(
+        env: Env,
+        participant: Address,
+        asset: Address,
+        amount: i128,
+    ) -> Result<(), Error> {
+        let admin: Address = get_admin(&env)?;
+        admin.require_auth();
+
+        if amount <= 0 {
+            return Err(Error::InsufficientBalance);
+        }
+
+        let pool_key = DataKey::RewardPool(asset.clone());
+        let pool_balance: i128 = env.storage().persistent().get(&pool_key).unwrap_or(0i128);
+        let new_pool_balance = pool_balance.checked_add(amount).ok_or(Error::Overflow)?;
+        env.storage().persistent().set(&pool_key, &new_pool_balance);
+        env.storage()
+            .persistent()
+            .extend_ttl(&pool_key, TTL_THRESHOLD, TTL_EXTEND_TO);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+
+        let user_key = (symbol_short!("rw_asset"), participant, asset);
+        let user_balance: i128 = env.storage().persistent().get(&user_key).unwrap_or(0i128);
+        let new_user_balance = user_balance.checked_add(amount).ok_or(Error::Overflow)?;
+        env.storage().persistent().set(&user_key, &new_user_balance);
+        env.storage()
+            .persistent()
+            .extend_ttl(&user_key, TTL_THRESHOLD, TTL_EXTEND_TO);
+
+        Ok(())
+    }
+
+    /// Claim rewards from a specific asset pool. Transfers SAC tokens to participant.
+    pub fn claim_rewards(
+        env: Env,
+        participant: Address,
+        asset: Address,
+        amount: i128,
+    ) -> Result<(), Error> {
+        participant.require_auth();
+
+        if amount <= 0 {
+            return Err(Error::InsufficientBalance);
+        }
+
+        let user_key = (symbol_short!("rw_asset"), participant.clone(), asset.clone());
+        let user_balance: i128 = env.storage().persistent().get(&user_key).unwrap_or(0i128);
+        if user_balance < amount {
+            return Err(Error::InsufficientBalance);
+        }
+
+        let pool_key = DataKey::RewardPool(asset.clone());
+        let pool_balance: i128 = env.storage().persistent().get(&pool_key).unwrap_or(0i128);
+        if pool_balance < amount {
+            return Err(Error::InsufficientBalance);
+        }
+
+        let new_user_balance = user_balance
+            .checked_sub(amount)
+            .ok_or(Error::InsufficientBalance)?;
+        env.storage().persistent().set(&user_key, &new_user_balance);
+        env.storage()
+            .persistent()
+            .extend_ttl(&user_key, TTL_THRESHOLD, TTL_EXTEND_TO);
+
+        let new_pool_balance = pool_balance
+            .checked_sub(amount)
+            .ok_or(Error::InsufficientBalance)?;
+        env.storage().persistent().set(&pool_key, &new_pool_balance);
+        env.storage()
+            .persistent()
+            .extend_ttl(&pool_key, TTL_THRESHOLD, TTL_EXTEND_TO);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+
+        let token_client = token::Client::new(&env, &asset);
+        token_client.transfer(&env.current_contract_address(), &participant, &amount);
+
+        Ok(())
+    }
+
+    /// Getter for all supported reward assets.
+    pub fn get_supported_assets(env: Env) -> Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&DataKey::SupportedAssets)
+            .unwrap_or(Vec::new(&env))
+    }
+
+    /// Getter for a specific asset reward pool balance.
+    pub fn get_reward_pool_balance(env: Env, asset: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RewardPool(asset))
+            .unwrap_or(0i128)
+    }
+
+    /// Getter for participant's reward balance for a specific asset.
+    pub fn get_participant_reward_balance(env: Env, participant: Address, asset: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&(symbol_short!("rw_asset"), participant, asset))
+            .unwrap_or(0i128)
     }
 }
 
