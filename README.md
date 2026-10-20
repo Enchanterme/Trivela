@@ -108,6 +108,20 @@ Trivela/
 
 ## 🔧 Architecture
 
+```mermaid
+flowchart TB
+    U[User Wallet / Browser] --> F[Frontend<br/>React + Vite]
+    F -->|REST /api/v1| B[Backend<br/>Express API]
+    F -->|Soroban RPC| R[(Soroban RPC)]
+    B -->|Health + config| R
+    R --> C1[Rewards Contract<br/>points · credits · claims]
+    R --> C2[Campaign Contract<br/>registration · attribution]
+    B --> D[(Campaign DB)]
+    B --> I[Event Indexer]
+    R -->|events| I
+    I --> D
+```
+
 For detailed system architecture documentation:
 
 - **System Map** – Diagram, trust boundaries, and end-to-end data flows:
