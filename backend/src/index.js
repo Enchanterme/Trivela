@@ -118,6 +118,10 @@ import {
 } from './routes/notifications.js';
 import { createOperatorBalanceJob } from './jobs/operatorBalanceJob.js';
 import { createGithubTaskStore } from './services/githubWebhook.js';
+import { createOperatorPortalRoutes } from './routes/operatorPortal.js';
+import { createJwtAuthService } from './services/jwtAuthService.js';
+import { createGasCostMonitoringJob } from './jobs/gasCostMonitoringJob.js';
+import { createLogAggregationService, createLogAggregationMiddleware } from './services/logAggregationService.js';
 import { createGithubTaskRoutes, createGithubWebhookRoutes } from './routes/githubWebhook.js';
 import { createIpfsPinService, createPinataProvider } from './services/ipfsPinService.js';
 import { IPFS_PIN_JOB_TYPE, createIpfsPinRoutes } from './routes/ipfsPins.js';
@@ -745,6 +749,8 @@ export async function createApp(options = {}) {
   app.use(createDeprecationMiddleware({ log }));
   app.use(traceparentMiddleware());
   app.use(requestLogger);
+  // #1346 — Log aggregation middleware
+  app.use(createLogAggregationMiddleware(logAggregationService));
   // #1256 — GitHub webhook. Mounted before express.json(): the HMAC signature is
   // computed over the raw request bytes.
   const githubTaskStore = createGithubTaskStore({ db: dal.db, logger: log });
@@ -1063,6 +1069,30 @@ export async function createApp(options = {}) {
   if (!options.disableJobs && depositWatchAccounts.length > 0 && stellarConfig.horizonUrl) {
     depositWatcher.start();
   }
+
+  // #1253 — JWT authentication service for operator portal
+  const jwtSecret = options.jwtSecret ?? process.env.JWT_SECRET;
+  const jwtAuthService = jwtSecret ? createJwtAuthService(jwtSecret) : null;
+
+  // #1266 — Gas cost monitoring worker
+  const gasCostMonitoringJob = createGasCostMonitoringJob({
+    rpcPool,
+    gasCostRepository: dal.gasCosts || {
+      insert: async () => {},
+      getByContractId: async () => [],
+      getDistinctContracts: async () => [],
+      getMetrics: async () => ({}),
+    },
+    logger: log,
+  });
+
+  // #1346 — Log aggregation service
+  const logAggregationService = createLogAggregationService({
+    lokiEndpoint: process.env.LOKI_ENDPOINT,
+    serviceName: process.env.OTEL_SERVICE_NAME || 'trivela-backend',
+    environment: process.env.NODE_ENV || 'development',
+    logger: log,
+  });
 
   async function buildHealthPayload() {
     const rpcUrl = rpcPool.getHealthyRpcUrl();
@@ -3386,6 +3416,11 @@ export async function createApp(options = {}) {
       createOperatorDepositRoutes({ watcher: depositWatcher }),
     );
 
+    // #1253 — JWT authentication for operator portal
+    if (jwtAuthService) {
+      createOperatorPortalRoutes(app, { jwtSecret });
+    }
+
     // Variant routes for A/B testing (Issue #624)
     const variantRouter = createVariantRoutes({
       variantRepo: variantRepository,
@@ -3590,6 +3625,11 @@ export async function createApp(options = {}) {
 
   // Expose wallet auth middleware for use by routes and tests
   app._requireWalletAuth = requireWalletAuth;
+
+  // Expose services for external use
+  app._jwtAuthService = jwtAuthService;
+  app._gasCostMonitoringJob = gasCostMonitoringJob;
+  app._logAggregationService = logAggregationService;
 
   return app;
 }
