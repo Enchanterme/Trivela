@@ -4,26 +4,29 @@ import {
   EMBED_WIDGET_TYPES,
   buildIframeSnippet,
   buildReactSnippet,
+  buildScriptSnippet,
 } from '../lib/embedSnippet.js';
 
 /**
  * "Embed this campaign" panel (#1219): lets partners pick a widget and theme
- * and copy either an <iframe> or a <TrivelaCampaignWidget> React snippet.
+ * and copy either an <iframe>, HTML/JS <script>, or <TrivelaCampaignWidget>
+ * React snippet. The HTML/JS form is what third-party blogs paste to show a
+ * live campaign leaderboard (#1370).
  *
  * @param {{ campaignId: string | number, campaignName?: string, origin?: string }} props
  */
 export default function EmbedSnippetGenerator({ campaignId, campaignName, origin }) {
   const siteOrigin = origin ?? (typeof window !== 'undefined' ? window.location.origin : '');
-  const [widget, setWidget] = useState('card');
+  const [widget, setWidget] = useState('leaderboard');
   const [theme, setTheme] = useState('dark');
-  const [format, setFormat] = useState('iframe');
+  const [format, setFormat] = useState('script');
   const [copied, setCopied] = useState(false);
 
   const snippet = useMemo(() => {
     const options = { campaignId, widget, theme, title: campaignName };
-    return format === 'react'
-      ? buildReactSnippet(siteOrigin, options)
-      : buildIframeSnippet(siteOrigin, options);
+    if (format === 'react') return buildReactSnippet(siteOrigin, options);
+    if (format === 'script') return buildScriptSnippet(siteOrigin, options);
+    return buildIframeSnippet(siteOrigin, options);
   }, [campaignId, campaignName, widget, theme, format, siteOrigin]);
 
   const copy = async () => {
@@ -64,6 +67,7 @@ export default function EmbedSnippetGenerator({ campaignId, campaignName, origin
         <label style={{ fontSize: '0.8rem' }}>
           Format{' '}
           <select value={format} onChange={(e) => setFormat(e.target.value)} style={selectStyle}>
+            <option value="script">HTML/JS script</option>
             <option value="iframe">HTML iframe</option>
             <option value="react">React component</option>
           </select>

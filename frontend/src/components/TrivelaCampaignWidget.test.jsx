@@ -23,15 +23,21 @@ describe('TrivelaCampaignWidget (#1219)', () => {
   });
 });
 
-describe('EmbedSnippetGenerator (#1219)', () => {
+describe('EmbedSnippetGenerator (#1219, #1370)', () => {
   it('switches widget and format, and copies the snippet', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });
 
     render(<EmbedSnippetGenerator campaignId="9" campaignName="Quest" origin="https://trivela.app" />);
     const code = screen.getByTestId('embed-snippet');
+    // Default is the HTML/JS script snippet with the leaderboard widget (#1370).
+    expect(code.textContent).toContain('<script');
+    expect(code.textContent).toContain('data-widget="leaderboard"');
+    expect(code.textContent).toContain('src="https://trivela.app/embed.js"');
+
+    fireEvent.change(screen.getByLabelText(/Format/), { target: { value: 'iframe' } });
     expect(code.textContent).toContain('<iframe');
-    expect(code.textContent).toContain('/embed/v1/card/9?theme=dark');
+    expect(code.textContent).toContain('/embed/v1/leaderboard/9');
 
     fireEvent.change(screen.getByLabelText(/Widget/), { target: { value: 'progress' } });
     expect(code.textContent).toContain('/embed/v1/progress/9');
