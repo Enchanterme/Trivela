@@ -154,6 +154,7 @@ import createWebhookRoutes from './routes/webhooks.js';
 import swaggerUi from 'swagger-ui-express';
 import { readFileSync } from 'node:fs';
 import { load as yamlLoad } from 'js-yaml';
+import { createReferralCodeRoutes } from './routes/referralCodes.js';
 
 const DEFAULT_PORT = 3001;
 
@@ -3475,6 +3476,10 @@ export async function createApp(options = {}) {
     // #560 — Public read API over indexed data (cursor-paginated, ETag cached)
     const indexReadRouter = createIndexReadRoutes({ dal, campaignRepository });
     app.use(`${prefix}/index`, rateLimiter, indexReadRouter);
+
+    // Referral code generator for partner Twitter influencers
+    const referralCodeRouter = createReferralCodeRoutes();
+    app.use(`${prefix}/referral-codes`, rateLimiter, referralCodeRouter);
 
     // #556 — Sponsored account creation + CAP-33 reserve sponsorship
     const sponsoredAccountRouter = createSponsoredAccountRoutes({
