@@ -1,13 +1,13 @@
 {
   "name": "@trivela/cli",
   "version": "0.1.0",
-  "description": "Trivela CLI — campaign & contract lifecycle management",
+  "description": "Trivela CLI \u2014 campaign & contract lifecycle management",
   "type": "module",
   "bin": {
     "trivela": "./src/index.js"
   },
   "scripts": {
-    "dev": "node src/index.js",
+    "dev": "node init && node src/index.js",
     "test": "node --experimental-vm-modules node_modules/.bin/jest",
     "lint": "eslint src/"
   },

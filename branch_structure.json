@@ -1,0 +1,24 @@
+{
+  "default_branch": "main",
+  "branches": [
+    "docs/hotfix-process",
+    "enchanter",
+    "enchnter-me",
+    "main",
+    "origin"
+  ],
+  "parent": {
+    "docs/hotfix-process": "main",
+    "enchanter": "main",
+    "enchnter-me": "main",
+    "main": null,
+    "origin": "main"
+  },
+  "order": [
+    "main",
+    "docs/hotfix-process",
+    "enchanter",
+    "enchnter-me",
+    "origin"
+  ]
+}

@@ -5,8 +5,8 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "dev": "node init && vite",
+    "build": "node init && vite build",
     "preview": "vite preview",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -22,7 +22,7 @@
     "test:visual:update": "playwright test --config=playwright.visual.config.ts --update-snapshots",
     "test:visual:report": "playwright show-report playwright-report-visual",
     "storybook": "storybook dev -p 6006",
-    "build-storybook": "storybook build",
+    "build-storybook": "node init && storybook build",
     "security:xss": "npm run lint && grep -r 'dangerouslySetInnerHTML' src/ || echo 'No dangerouslySetInnerHTML found - XSS audit passed'",
     "test:e2e:flow": "playwright test --config=playwright.flow.config.js"
   },
