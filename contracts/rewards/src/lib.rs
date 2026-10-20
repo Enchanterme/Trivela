@@ -150,17 +150,6 @@ pub enum Error {
     // ── Distribution mode errors (issue #871) ─────────────────────────────────────
     /// Invalid distribution mode specified.
     InvalidDistributionMode = 49,
-    /// Below minimum claim amount.
-    BelowMinClaim = 50,
-    /// Invalid boost curve configuration.
-    InvalidBoostCurve = 51,
-    /// Zero boost multiplier not allowed.
-    ZeroBoostMultiplier = 52,
-    /// Invalid lock schedule configuration.
-    InvalidLockSchedule = 53,
-    // ── Issue #900: Minimum claim threshold ──────────────────────────────────
-    /// Claim amount is below the configured minimum threshold.
-    BelowMinClaim = 49,
     // ── Issue #903: Campaign supply cap ───────────────────────────────────────
     /// Credit would exceed the campaign's configured total supply cap.
     CampaignSupplyCapExceeded = 50,
@@ -197,6 +186,19 @@ pub enum Error {
     ClaimCooldownActive = 63,
     /// Invalid cooldown configuration.
     InvalidCooldownConfig = 64,
+    // ── Issue #900: Minimum claim threshold ──────────────────────────────────
+    /// Claim amount is below the configured minimum threshold.
+    BelowMinClaim = 65,
+    // ── Staking errors ───────────────────────────────────────────────────────
+    /// Staking position not found.
+    StakingNotFound = 66,
+    /// Staking position is still locked.
+    PositionLocked = 67,
+    // ── Timelock errors ──────────────────────────────────────────────────────
+    /// This exact operation is already queued in the timelock.
+    TimelockAlreadyQueued = 68,
+    /// No matching timelock entry is queued.
+    TimelockNotFound = 69,
 }
 
 // ── Issue #895: Operator delegation types ─────────────────────────────────────
@@ -243,6 +245,16 @@ pub struct VestingRecord {
     pub start_ledger: u32,
     pub end_ledger: u32,
     pub claimed: u64,
+}
+
+/// Merkle membership proof for airdrop claims.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct MerkleProof {
+    /// Sibling hashes from leaf level up to (but not including) the root.
+    pub siblings: Vec<BytesN<32>>,
+    /// Leaf position in the tree. Bit `k` (LSB first) selects left/right at level `k`.
+    pub leaf_index: u32,
 }
 
 // ── Staking types ──────────────────────────────────────────────────────────
@@ -295,7 +307,7 @@ pub struct BoostCurve {
     /// Ledger duration for maximum boost
     pub max_duration_ledgers: u32,
     /// Curve type (0 = linear, 1 = logarithmic, 2 = exponential)
-    pub curve_type: u8,
+    pub curve_type: u32,
 }
 
 // ── Multi-sig types (issue #733) ─────────────────────────────────────────────
@@ -656,6 +668,29 @@ pub struct ClawbackProposal {
 
 #[contract]
 pub struct RewardsContract;
+
+fn merkle_hash_pair(env: &Env, a: &BytesN<32>, b: &BytesN<32>) -> BytesN<32> {
+    let mut combined = [0u8; 64];
+    combined[..32].copy_from_slice(&a.to_array());
+    combined[32..].copy_from_slice(&b.to_array());
+    env.crypto()
+        .sha256(&Bytes::from_slice(env, &combined))
+        .into()
+}
+
+fn verify_airdrop_proof(env: &Env, leaf: &BytesN<32>, proof: &MerkleProof, root: &BytesN<32>) -> bool {
+    let mut current = leaf.clone();
+    let mut index = proof.leaf_index;
+    for sibling in proof.siblings.iter() {
+        current = if index & 1 == 0 {
+            merkle_hash_pair(env, &current, &sibling)
+        } else {
+            merkle_hash_pair(env, &sibling, &current)
+        };
+        index >>= 1;
+    }
+    &current == root
+}
 
 fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {
     admin.require_auth();
@@ -1018,7 +1053,7 @@ fn isqrt(n: u64) -> u64 {
 /// Linear mode: returns amount as-is.
 /// Quadratic mode: returns isqrt(amount) to reduce whale dominance.
 fn apply_distribution_mode(env: &Env, campaign_id: u64, base_amount: u64) -> u64 {
-    let mode: u8 = env
+    let mode: u32 = env
         .storage()
         .instance()
         .get(&(DIST_MODE, campaign_id))
@@ -1176,7 +1211,7 @@ impl RewardsContract {
         env: Env,
         admin: Address,
         campaign_id: u64,
-        mode: u8,
+        mode: u32,
     ) -> Result<(), Error> {
         require_admin(&env, &admin)?;
         if mode > 1 {
@@ -1193,7 +1228,7 @@ impl RewardsContract {
 
     /// Get distribution mode for a campaign (0 = Linear, 1 = Quadratic).
     /// Defaults to Linear (0) if not set.
-    pub fn distribution_mode(env: Env, campaign_id: u64) -> u8 {
+    pub fn distribution_mode(env: Env, campaign_id: u64) -> u32 {
         env.storage()
             .instance()
             .get(&(DIST_MODE, campaign_id))
@@ -2106,7 +2141,7 @@ impl RewardsContract {
         }
 
         // Calculate boosted rewards
-        let boosted_amount = calculate_boosted_amount(position.amount, position.boost_multiplier_bps)?;
+        let boosted_amount = Self::calculate_boosted_amount(position.amount, position.boost_multiplier_bps)?;
         let total_to_claim = boosted_amount;
 
         // Check if already claimed
@@ -2197,7 +2232,7 @@ impl RewardsContract {
             if let Some(position) = env.storage().instance().get::<_, StakingPosition>(&key) {
                 // Check if position is unlocked
                 if now >= position.unlocks_at {
-                    let boosted_amount = calculate_boosted_amount(position.amount, position.boost_multiplier_bps)
+                    let boosted_amount = Self::calculate_boosted_amount(position.amount, position.boost_multiplier_bps)
                         .unwrap_or(0);
                     let available = boosted_amount.saturating_sub(position.claimed);
                     total_available = total_available.saturating_add(available);
@@ -4096,20 +4131,19 @@ impl RewardsContract {
 
     /// Claim airdrop rewards using a valid Merkle proof and nullifier (private).
     /// Proof structure: MerkleProof { siblings: Vec<BytesN<32>>, leaf_index: u32 }
-    /// leaf_preimage: Poseidon(secret_seed, amount_encoded)
     /// nullifier: Hash of (secret, caller address) to prevent double-claiming
     pub fn claim_airdrop(
         env: Env,
         claimer: Address,
         amount: u64,
         leaf_preimage: BytesN<32>,
-        proof: crate::merkle::MerkleProof,
+        proof: MerkleProof,
         nullifier: BytesN<32>,
     ) -> Result<u64, Error> {
         claimer.require_auth();
 
         // Check that airdrop root is configured
-        let root = env
+        let root: BytesN<32> = env
             .storage()
             .instance()
             .get(&AIRDROP_ROOT)
@@ -4127,8 +4161,9 @@ impl RewardsContract {
         }
 
         // Verify Merkle proof
-        crate::merkle::verify(&env, &root, &leaf_preimage, &proof)
-            .map_err(|_| Error::AirdropInvalidProof)?;
+        if !verify_airdrop_proof(&env, &leaf_preimage, &proof, &root) {
+            return Err(Error::AirdropInvalidProof);
+        }
 
         // Mark nullifier as used
         env.storage().persistent().set(&nullifier_key, &true);
