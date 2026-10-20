@@ -2292,3 +2292,31 @@ fn test_timelock_double_queue_rejected() {
     let result = client.try_queue_timelock(&admin, &op_hash);
     assert_eq!(result, Err(Ok(Error::TimelockAlreadyQueued)));
 }
+
+#[test]
+fn test_multi_token_reward_pool_add_and_supported_assets() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let contract_id = env.register_contract(None, RewardsContract);
+    let client = RewardsContractClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    let usdc = Address::generate(&env);
+    let xlm = Address::generate(&env);
+
+    client.add_reward_asset(&usdc);
+    client.add_reward_asset(&xlm);
+
+    let assets = client.get_supported_assets();
+    assert_eq!(assets.len(), 2);
+    assert_eq!(assets.get(0).unwrap(), usdc);
+    assert_eq!(assets.get(1).unwrap(), xlm);
+
+    let alice = Address::generate(&env);
+    client.credit_rewards(&alice, &usdc, &500);
+    assert_eq!(client.get_reward_pool_balance(&usdc), 500);
+    assert_eq!(client.get_participant_reward_balance(&alice, &usdc), 500);
+    assert_eq!(client.get_reward_pool_balance(&xlm), 0);
+}
