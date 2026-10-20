@@ -26,7 +26,7 @@ import { requestContextMiddleware } from './middleware/requestContext.js';
 import securityHeaders from './middleware/securityHeaders.js';
 import errorHandler from './middleware/errorHandler.js';
 import { paginateItems } from './pagination.js';
-import { checkSorobanRpcHealth } from './sorobanRpc.js';
+import { checkSorobanRpcHealth, getRpcLatencyStats } from './sorobanRpc.js';
 import { createRpcPool } from './rpcPool.js';
 import { resolveStellarNetworkConfig } from './config/stellarNetwork.js';
 import { validateBackendEnv } from './config/envValidation.js';
@@ -1373,6 +1373,11 @@ export async function createApp(options = {}) {
       '# HELP trivela_rpc_pool_unhealthy Unhealthy RPC endpoints in the pool.',
       '# TYPE trivela_rpc_pool_unhealthy gauge',
       `trivela_rpc_pool_unhealthy ${poolStatus.unhealthy}`,
+      // Soroban RPC probe latency summary (#1339).
+      '# HELP trivela_rpc_latency_ms Soroban RPC probe latency in milliseconds.',
+      '# TYPE trivela_rpc_latency_ms summary',
+      `trivela_rpc_latency_ms_sum ${getRpcLatencyStats().sumMs}`,
+      `trivela_rpc_latency_ms_count ${getRpcLatencyStats().count}`,
       // Job queue depth (issue #930 — RED + queue + RPC metrics).
       '# HELP trivela_job_queue_depth Jobs waiting to run, by queue.',
       '# TYPE trivela_job_queue_depth gauge',
