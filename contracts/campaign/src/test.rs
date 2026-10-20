@@ -1976,3 +1976,81 @@ fn test_register_without_fee_is_free() {
     assert!(client.register(&participant, &leaf, &proof, &None, &None));
     assert!(client.participation_fee().is_none());
 }
+
+// ── State dump / restore (issue #1372) ───────────────────────────────────────
+
+#[test]
+fn test_export_state_roundtrip() {
+    let (env, _contract_id, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    env.mock_all_auths();
+
+    client.set_window(&admin, &0, &100, &200);
+    client.set_max_cap(&admin, &1, &500);
+    client.set_invite_only(&admin, &2, &true);
+
+    let dump = client.export_state();
+    assert_eq!(dump.admin, admin);
+    assert!(dump.active);
+    assert_eq!(dump.start_time, 100);
+    assert_eq!(dump.end_time, 200);
+    assert_eq!(dump.max_cap, 500);
+    assert!(dump.invite_only);
+    assert_eq!(dump.schema_version, 1);
+}
+
+#[test]
+fn test_import_state_restores_configuration() {
+    let (env, _contract_id, client) = setup();
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    client.initialize(&admin);
+    env.mock_all_auths();
+
+    client.set_window(&admin, &0, &100, &200);
+    client.set_max_cap(&admin, &1, &500);
+
+    let mut dump = client.export_state();
+    dump.admin = new_admin.clone();
+    dump.start_time = 10;
+    dump.end_time = 20;
+    dump.max_cap = 42;
+    dump.active = false;
+
+    client.import_state(&admin, &2, &dump);
+
+    assert_eq!(client.admin(), new_admin);
+    assert!(!client.is_active());
+    assert_eq!(client.get_window(), (10, 20));
+}
+
+#[test]
+fn test_import_state_requires_admin() {
+    let (env, _contract_id, client) = setup();
+    let admin = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    client.initialize(&admin);
+    env.mock_all_auths();
+
+    let dump = client.export_state();
+    assert_eq!(
+        client.try_import_state(&stranger, &0, &dump),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
+#[test]
+fn test_import_state_rejects_unknown_schema() {
+    let (env, _contract_id, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    env.mock_all_auths();
+
+    let mut dump = client.export_state();
+    dump.schema_version = 99;
+    assert_eq!(
+        client.try_import_state(&admin, &0, &dump),
+        Err(Ok(Error::UnsupportedMigration))
+    );
+}
